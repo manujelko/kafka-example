@@ -1,38 +1,41 @@
+import asyncio
 import json
 
 import structlog
-from kafka import KafkaProducer
+from aiokafka import AIOKafkaProducer
 
 logger = structlog.get_logger()
 
 
-def on_send_success(record_metadata):
-    logger.info(
-        f"Message sent to {record_metadata.topic} partition "
-        "{record_metadata.partition} offset {record_metadata.offset}"
-    )
+async def send_one(producer: AIOKafkaProducer, topic: str, value: int) -> None:
+    try:
+        record_metadata = await producer.send_and_wait(topic, value)
+        logger.info(
+            "Message sent",
+            topic=record_metadata.topic,
+            partition=record_metadata.partition,
+            offset=record_metadata.offset,
+        )
+    except Exception as exc:
+        logger.error("Error", exc_info=exc)
 
 
-def on_send_error(excp):
-    logger.error("Error", exc_info=excp)
-
-
-def main():
-    producer = KafkaProducer(
+async def main() -> None:
+    producer = AIOKafkaProducer(
         bootstrap_servers=["localhost:9093"],
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
     )
-    topic = "numbertopic"
-
-    for number in range(1, 100_101):
-        logger.info(f"Sending number {number}...")
-        future = producer.send(topic, value=number)
-        future.add_callback(on_send_success)
-        future.add_errback(on_send_error)
-        producer.flush()
-
-    logger.info("All messages sent")
+    # Get cluster layout and initial topic/partition leadership information
+    await producer.start()
+    try:
+        topic = "numbertopic"
+        for number in range(1, 1000):
+            logger.info(f"Sending number {number}...")
+            await send_one(producer, topic, number)
+    finally:
+        # Wait for all pending messages to be delivered or expire.
+        await producer.stop()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
